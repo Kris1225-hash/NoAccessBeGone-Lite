@@ -32,6 +32,7 @@ schtasks /create /tn "nab-peer" /tr "\"%DIR%nab_peer.exe\"" /sc onlogon /rl limi
 echo autostart registered (Task Scheduler: nab-peer)
 
 echo.
+echo watch it live at:  http://localhost:8092
 echo done. start it now with:  "%DIR%nab_peer.exe"
 echo stop/disable anytime with:  schtasks /delete /tn "nab-peer" /f
 endlocal

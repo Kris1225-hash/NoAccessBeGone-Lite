@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # nab-peer setup — macOS / Linux
-# Sets up the peer with a donated account token and registers autostart.
+# Auto-registers an account from this machine (residential IP), or falls back
+# to a manually donated token, then registers autostart.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,16 +10,26 @@ SHARE_KEY="a436975c7eb45eadac09659e4dce92f9f2207c8be40bfadc"
 
 echo "== nab peer setup =="
 echo "This machine will run a scanning peer for the nab name database."
-echo "It needs a Discord account token (use a dedicated alt, not your main)."
 echo
-read -r -p "Discord token: " TOKEN
-if [ -z "$TOKEN" ]; then
-    echo "no token given, aborting"
-    exit 1
+echo "trying to auto-register a fresh account from this IP..."
+TOKEN="$(/usr/bin/python3 "$DIR/nab_peer.py" --register 2>/dev/null || true)"
+
+if [ -z "$TOKEN" ] || ! grep -q "TOKEN=" "$HOME/.nab/peer.env" 2>/dev/null; then
+    echo
+    echo "auto-register failed (or the account needs a phone)."
+    echo "Paste a token from a dedicated alt account instead:"
+    read -r -p "Discord token: " TOKEN
+    if [ -z "$TOKEN" ]; then
+        echo "no token given, aborting"
+        exit 1
+    fi
 fi
 
-mkdir -p "$HOME/.nab"
-cat > "$CONF" << EOF
+if [ -f "$HOME/.nab/peer.env" ]; then
+    echo "config already exists (from auto-register) — keeping it"
+else
+    mkdir -p "$HOME/.nab"
+    cat > "$CONF" << EOF
 # nab peer config — created $(date -u +%Y-%m-%dT%H:%M:%SZ)
 TOKEN=$TOKEN
 SHARE_KEY=$SHARE_KEY
@@ -26,8 +37,9 @@ SCAN=1
 DAILY_CAP=100
 JOIN_INTERVAL=60
 EOF
-chmod 600 "$CONF"
-echo "config written to $CONF"
+    chmod 600 "$CONF"
+    echo "config written to $CONF"
+fi
 
 if [ "$(uname)" = "Darwin" ]; then
     PLIST="$HOME/Library/LaunchAgents/xyz.nab.peer.plist"
@@ -66,6 +78,8 @@ EOF
 fi
 
 echo
+echo
+echo "watch it live:  http://localhost:8092"
 echo "done. the peer is now scanning servers in the background."
 echo "stop it anytime with:"
 echo "  mac: launchctl unload ~/Library/LaunchAgents/xyz.nab.peer.plist"

@@ -7,12 +7,23 @@ Reads TOKEN/SHARE_KEY from env (injected by the supervisor).
   - with SCAN=1: join->scan->leave loop over public invites (residential IPs only)
 """
 import json, os, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HUB = "https://nab.enby.fish"
 
 POLL_EVERY = 120          # seconds between request-queue polls
 BULK_EVERY = 12 * 3600    # seconds between full sweeps
 FETCH_SPACING = 1.2       # seconds between discord api calls
+
+events = deque(maxlen=200)
+stats = {"joined": 0, "scanned": 0, "names": 0, "left": 0, "fulfilled": 0, "state": "starting"}
+paused = False
+
+def log(msg):
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    events.append({"t": time.strftime("%H:%M:%S"), "m": msg})
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
@@ -114,7 +125,7 @@ def scanner(token, key, state_path):
                 time.sleep(retry)
                 continue
             if st in (401, 403, 1010):
-                print(f"join blocked ({st}), backing off 10 min", flush=True)
+                log(f"join blocked ({st}), backing off 10 min")
                 time.sleep(600)
                 continue
             if st != 200:
@@ -132,7 +143,9 @@ def scanner(token, key, state_path):
                 continue
 
             count_today += 1
-            print(f"joined {gname} ({guild_id}) via {code}", flush=True)
+            log(f"joined {gname} ({guild_id}) via {code}")
+            stats["joined"] += 1
+            stats["state"] = "joined " + gname
 
             st2, channels, retry = discord(f"/api/v9/guilds/{guild_id}/channels", token)
             if st2 == 200:
@@ -145,28 +158,35 @@ def scanner(token, key, state_path):
                                                    "guild_id": guild_id, "guild_name": gname,
                                                    "invite": code}).encode(),
                                   headers={"content-type": "application/json"})
-                    print(f"scanned {gname}: {len(names)} channel names" +
-                          (f" (uploaded {st3})" if st3 != 200 else ""), flush=True)
+                    log(f"scanned {gname}: {len(names)} channel names" +
+                          (f" (uploaded {st3})" if st3 != 200 else ""))
+                    stats["scanned"] += 1
+                    stats["names"] += len(names)
+                    stats["state"] = "scanning"
                 else:
-                    print(f"scanned {gname}: no channels", flush=True)
+                    log(f"scanned {gname}: no channels")
+                stats["scanned"] += 1
+                stats["state"] = "scanning"
                 time.sleep(FETCH_SPACING)
 
             joined.add(code)
             joined.add(guild_id)
             save()
             if was_member:
-                print(f"already member of {gname}, not leaving", flush=True)
+                log(f"already member of {gname}, not leaving")
                 time.sleep(interval)
                 continue
             st4, _, retry = discord(f"/api/v9/users/@me/guilds/{guild_id}", token, method="DELETE")
             if st4 == 429:
                 time.sleep(retry)
             elif st4 in (200, 204):
-                print(f"left {gname}", flush=True)
+                log(f"left {gname}")
+                stats["left"] += 1
+                stats["state"] = "idle"
             else:
-                print(f"leave {gname} returned {st4}", flush=True)
+                log(f"leave {gname} returned {st4}")
         except Exception as e:
-            print("scanner error:", e, flush=True)
+            log(f"scanner error: {e}")
 
         time.sleep(interval)
 
@@ -191,6 +211,7 @@ def load_config():
     return env
 
 def main():
+    threading.Thread(target=start_ui, daemon=True).start()
     cfg = load_config()
     token = cfg.get("TOKEN", "")
     key = cfg.get("SHARE_KEY", "")
@@ -250,7 +271,8 @@ def main():
                                                        "guild_name": my_guilds.get(guild_id, "")}).encode(),
                                       headers={"content-type": "application/json"})
                         if st3 == 200:
-                            print(f"fulfilled {len(names)} names for guild {guild_id}", flush=True)
+                            log(f"fulfilled {len(names)} names for guild {guild_id}")
+                        stats["fulfilled"] += 1
                     time.sleep(FETCH_SPACING)
 
             # 2. bulk sweep: push everything this account can see
@@ -273,16 +295,180 @@ def main():
                                       headers={"content-type": "application/json"})
                         if st3 == 200:
                             session_names += len(names)
-                            print(f"bulk: {len(names)} names from guild {guild_id}", flush=True)
+                            log(f"bulk: {len(names)} names from guild {guild_id}")
+                            stats["names"] += len(names)
+                            stats["scanned"] += 1
                     time.sleep(FETCH_SPACING)
-                print("bulk sweep done", flush=True)
+                log("bulk sweep done")
+                stats["state"] = "idle"
                 last_sweep = time.time()
                 heartbeat()
 
         except Exception as e:
-            print("error:", e, flush=True)
+            log(f"error: {e}")
 
         time.sleep(POLL_EVERY)
 
+# ---------------- auto-register: create an account from this (home) IP ----------------
+
+def register_account():
+    """Register a fresh account locally (no phone). Returns the token or None."""
+    import random, string
+    addr = "".join(random.choices(string.ascii_lowercase + string.digits, k=12)) + "@reqbin.email"
+    pw = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+    print("creating temp email...", flush=True)
+    st, body = http("https://api.mail.tm/accounts", method="POST",
+                    data=json.dumps({"address": addr, "password": pw}).encode(),
+                    headers={"content-type": "application/json"})
+    if st != 201:
+        print("mail.tm failed", flush=True)
+        return None
+    try:
+        mtok = json.loads(body)["token"]
+    except Exception:
+        print("mail.tm no token", flush=True)
+        return None
+
+    print("solving captcha via nab relay...", flush=True)
+    st, body = http(HUB + "/nab/captcha", method="POST", data=b"{}")
+    if st != 200 or not isinstance(body, dict) or not body.get("ok"):
+        print("captcha relay failed", flush=True)
+        return None
+    cap = body.get("token")
+
+    print("registering with discord...", flush=True)
+    st, body = http("https://discord.com/api/v9/experiments")
+    fp = None
+    if isinstance(body, str):
+        m = re.search(r'"fingerprint":"([^"]+)"', body)
+        fp = m.group(1) if m else None
+    username = "nab" + "".join(random.choices(string.ascii_lowercase, k=7))
+    payload = {"consent": True, "date_of_birth": "2000-01-01", "email": addr,
+               "fingerprint": fp, "username": username, "password": pw,
+               "captcha_key": cap, "invite": None, "gift_code_sku_id": None}
+    st, body = http("https://discord.com/api/v9/auth/register", method="POST",
+                    data=json.dumps(payload).encode(),
+                    headers={"content-type": "application/json", "origin": "https://discord.com",
+                             "x-super-properties": "e30="})
+    if isinstance(body, str):
+        print("register response:", body[:200], flush=True)
+        return None
+    token = body.get("token")
+    if not token:
+        print("register failed:", json.dumps(body)[:200], flush=True)
+        if body.get("phone_verify_required"):
+            print("account needs phone verification at registration — use a manual token instead", flush=True)
+        return None
+
+    try:
+        st, me = http("https://discord.com/api/v9/users/@me", headers={"authorization": token})
+        uid = me.get("id", "") if isinstance(me, dict) else ""
+    except Exception:
+        uid = ""
+    if uid:
+        print(f"registered {username} ({uid})", flush=True)
+    return token
+
+
+
+# ---------------- local dashboard (http://localhost:8092) ----------------
+
+UI_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>nab peer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark}body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b0e14;color:#c9d1d9;display:flex;flex-direction:column;align-items:center;min-height:100vh}
+main{max-width:820px;width:100%;padding:2rem 1.5rem}
+h1{font-size:1.4rem;letter-spacing:.12em;color:#e6edf3}h1 span{color:#58a6ff}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.7rem;margin:1.2rem 0}
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:.9rem}
+.card .n{font-size:1.4rem;font-weight:700;color:#58a6ff}.card .l{font-size:.7rem;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;margin-top:.3rem}
+#state{color:#3fb950;font-size:.85rem;margin-bottom:.5rem}
+#state.busy{color:#d29922}#state.err{color:#f85149}
+#log{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:1rem;height:340px;overflow-y:auto;font-size:.8rem;line-height:1.6}
+#log div{border-bottom:1px solid #161b22}.t{color:#8b949e;margin-right:.6rem}
+button{background:#238636;border:none;color:#fff;border-radius:8px;padding:.5rem 1.1rem;font-family:inherit;cursor:pointer;margin-top:1rem}
+button.off{background:#da3633}
+</style></head><body><main>
+<h1>nab<span>.</span> peer</h1>
+<div id="state">connecting…</div>
+<div class="cards">
+<div class="card"><div class="n" id="joined">0</div><div class="l">joined</div></div>
+<div class="card"><div class="n" id="scanned">0</div><div class="l">servers scanned</div></div>
+<div class="card"><div class="n" id="names">0</div><div class="l">names uploaded</div></div>
+<div class="card"><div class="n" id="fulfilled">0</div><div class="l">requests fulfilled</div></div>
+<div class="card"><div class="n" id="left">0</div><div class="l">left</div></div>
+</div>
+<div id="log"></div>
+<button id="pause">pause</button>
+<script>
+const el=id=>document.getElementById(id);
+async function tick(){try{
+const r=await fetch('/state');const d=await r.json();
+el('joined').textContent=d.joined;el('scanned').textContent=d.scanned;el('names').textContent=d.names;
+el('fulfilled').textContent=d.fulfilled;el('left').textContent=d.left;
+const s=el('state');s.textContent=(d.paused?'PAUSED — ':'')+d.state;
+s.className=d.paused?'err':(d.state==='idle'?'':'busy');
+const lg=el('log');let first=lg.children.length===0;
+lg.innerHTML='';d.events.forEach(e=>{const x=document.createElement('div');x.innerHTML='<span class=t>'+e.t+'</span>'+e.m;lg.appendChild(x)});
+if(first)lg.scrollTop=lg.scrollHeight;
+}catch(e){el('state').textContent='ui error: '+e}}
+setInterval(tick,2000);tick();
+el('pause').onclick=async()=>{const r=await fetch('/action',{method:'POST'});const d=await r.json();el('pause').textContent=d.paused?'resume':'pause';el('pause').className=d.paused?'off':''};
+</script>
+</main></body></html>"""
+
+class UIHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        if self.path == "/state":
+            body = json.dumps({"joined": stats["joined"], "scanned": stats["scanned"],
+                               "names": stats["names"], "fulfilled": stats["fulfilled"],
+                               "left": stats["left"], "state": stats["state"],
+                               "paused": paused, "events": list(events)}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        body = UI_PAGE.encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
+    def do_POST(self):
+        global paused
+        if self.path == "/action":
+            paused = not paused
+            log(("paused" if paused else "resumed") + " via web ui")
+            body = json.dumps({"paused": paused}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_error(404)
+
+def start_ui():
+    port = int(os.environ.get("UI_PORT", "8092"))
+    try:
+        ThreadingHTTPServer(("127.0.0.1", port), UIHandler).serve_forever()
+    except Exception as e:
+        log(f"ui failed to start on :{port}: {e}")
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--register":
+        token = register_account()
+        if not token:
+            sys.exit(1)
+        conf = os.path.expanduser("~/.nab/peer.env")
+        os.makedirs(os.path.dirname(conf), exist_ok=True)
+        key = os.environ.get("SHARE_KEY", "a436975c7eb45eadac09659e4dce92f9f2207c8be40bfadc")
+        with open(conf, "w") as f:
+            f.write(f"TOKEN={token}\nSHARE_KEY={key}\nSCAN=1\nDAILY_CAP=100\nJOIN_INTERVAL=60\n")
+        os.chmod(conf, 0o600)
+        print(f"config written to {conf}")
+        sys.exit(0)
     main()
