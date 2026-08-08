@@ -1,0 +1,31 @@
+name: build peer binaries
+
+on:
+  push:
+    paths: ["peer/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: nab-peer-windows.exe
+          - os: macos-latest
+            name: nab-peer-macos
+          - os: ubuntu-latest
+            name: nab-peer-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --name nab-peer peer/nab_peer.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/nab-peer${{ runner.os == 'Windows' && '.exe' || '' }}
