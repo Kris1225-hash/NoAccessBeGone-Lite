@@ -13,14 +13,14 @@ Config via /var/lib/private/nab-factory/.env:
   PROXIES=one:two      http proxies, one used per account (rotated)
   PROXY_AUTH=user:pass
 """
-import json, os, random, re, string, subprocess, time, urllib.parse
+import json, os, random, re, string, subprocess, sys, time, urllib.parse
 
 STATE = "/var/lib/private/nab-factory"
 ENV_PATH = os.path.join(STATE, ".env")
 ACCOUNTS_ENV = "/var/lib/private/nab/accounts.env"
 
 def candidate_env_paths():
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
     return [os.path.join(here, "factory.env"),
             os.path.expanduser("~/.nab/factory.env"),
             ENV_PATH]

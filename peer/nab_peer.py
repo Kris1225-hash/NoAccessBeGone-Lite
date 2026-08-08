@@ -6,7 +6,7 @@ Reads TOKEN/SHARE_KEY from env (injected by the supervisor).
   - bulk-sweeps every guild it is in (immediately when membership changes)
   - with SCAN=1: join->scan->leave loop over public invites (residential IPs only)
 """
-import json, os, re, subprocess, threading, time, urllib.parse, urllib.request, urllib.error
+import json, os, re, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -194,7 +194,8 @@ def scanner(token, key, state_path):
 def load_config():
     """env vars win; fall back to a config file next to the script/binary."""
     env = {k: v for k, v in os.environ.items() if k in ("TOKEN", "SHARE_KEY", "SCAN", "SCAN_STATE", "DAILY_CAP", "JOIN_INTERVAL")}
-    for path in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "peer.env"),
+    here = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "peer.env"),
                  os.path.expanduser("~/.nab/peer.env")):
         if os.path.isfile(path):
             try:
