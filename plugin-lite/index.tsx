@@ -9,12 +9,13 @@ import "./style.css";
 import { get as getStore, set as setStore } from "@api/DataStore";
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { classNameFactory } from "@utils/css";
 import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
-import type { Channel } from "@vencord/discord-types";
+import type { Channel, Guild } from "@vencord/discord-types";
 import { findCssClassesLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, GuildStore, PermissionsBits, PermissionStore } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, GuildStore, Menu, PermissionsBits, PermissionStore, Toasts } from "@webpack/common";
 
 import LockScreen from "./components/LockScreen";
 
@@ -73,6 +74,27 @@ export const settings = definePluginSettings({
         restartNeeded: true
     }
 });
+
+const guildHeaderContextMenuPatch: NavContextMenuPatchCallback = (children, { guild }: { guild: Guild; }) => {
+    if (!guild) return;
+
+    const group = findGroupChildrenByChildId("privacy", children);
+    group?.push(
+        <Menu.MenuItem
+            id="nab-lite-request-guild"
+            label="nab: request channel names"
+            action={() => {
+                queriedGuilds.delete(guild.id);
+                queryGuild(guild.id);
+                Toasts.show({
+                    message: `nab: requesting ${guild.name} from the network...`,
+                    id: "nab-lite-request-guild",
+                    type: Toasts.Type.INFO
+                });
+            }}
+        />
+    );
+};
 
 function isUncategorized(objChannel: { channel: Channel; comparator: number; }) {
     return objChannel.channel.id === "null" && objChannel.channel.name === "Uncategorized" && objChannel.comparator === -1;
@@ -347,6 +369,10 @@ export default definePlugin({
     },
 
     LockScreen: (channel: any) => <LockScreen channel={channel} />,
+
+    contextMenus: {
+        "guild-header-popout": guildHeaderContextMenuPatch
+    },
 
     LockIcon: ErrorBoundary.wrap(() => (
         <svg
