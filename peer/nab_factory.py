@@ -18,6 +18,12 @@ import json, os, random, re, string, subprocess, time, urllib.parse
 STATE = "/var/lib/private/nab-factory"
 ENV_PATH = os.path.join(STATE, ".env")
 ACCOUNTS_ENV = "/var/lib/private/nab/accounts.env"
+
+def candidate_env_paths():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [os.path.join(here, "factory.env"),
+            os.path.expanduser("~/.nab/factory.env"),
+            ENV_PATH]
 LOG = "/var/log/nab/factory.log"
 HUB = "https://nab.enby.fish"
 
@@ -32,13 +38,19 @@ def log(msg):
 
 def load_env():
     env = {}
-    with open(ENV_PATH) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip().strip('"').strip("'")
+    for path in candidate_env_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except Exception:
+            pass
     return env
 
 def curl(url, method="GET", headers=None, data=None, proxy=None, timeout=40):
