@@ -15,13 +15,12 @@ import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
 import type { Channel } from "@vencord/discord-types";
 import { findCssClassesLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, PermissionsBits, PermissionStore } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, GuildStore, PermissionsBits, PermissionStore } from "@webpack/common";
 
 import LockScreen from "./components/LockScreen";
 
 const logger = new Logger("NoAccessBeGoneLite");
 
-const DEFAULT_LIST_URL = "https://raw.githubusercontent.com/Kris1225-hash/NoAccessBeGone-Lite/main/names.jsonl";
 const OVERRIDES_KEY = "noAccessBeGoneLite_nameOverrides";
 const OBFUSCATED_NAME = "___hidden___";
 
@@ -56,16 +55,16 @@ export const cl = classNameFactory("nab-");
 const ChannelListClasses = findCssClassesLazy("modeSelected", "modeMuted", "unread", "icon");
 
 export const settings = definePluginSettings({
-    listUrl: {
-        description: "URL of the community name database (JSONL)",
+    queryUrl: {
+        description: "Name database query endpoint",
         type: OptionType.STRING,
-        default: DEFAULT_LIST_URL,
+        default: "http://[2a01:4f8:10a:cac::1:32]/nab/request",
         restartNeeded: true
     },
-    refreshMinutes: {
-        description: "How often to refresh the name database (minutes)",
+    queryMinutes: {
+        description: "How often to re-query uncached servers (minutes)",
         type: OptionType.NUMBER,
-        default: 60,
+        default: 30,
         restartNeeded: true
     },
     hideUnreads: {
@@ -367,9 +366,9 @@ export default definePlugin({
         logger.info("armed");
         void loadOverrides().then(() => {
             applyNameOverrides();
-            refreshList();
+            queryAllGuilds();
         });
-        refreshTimer = setInterval(refreshList, Math.max(settings.store.refreshMinutes, 5) * 60 * 1000);
+        refreshTimer = setInterval(queryAllGuilds, Math.max(settings.store.queryMinutes, 5) * 60 * 1000);
     },
 
     stop() {
@@ -380,17 +379,27 @@ export default definePlugin({
     flux: {
         CONNECTION_OPEN: () => {
             applyNameOverrides();
-            refreshList();
+            queryAllGuilds();
+        },
+        GUILD_CREATE: (e: any) => {
+            if (!e.guild?.id) return;
+            applyNameOverrides();
+            queryGuild(e.guild.id);
         },
         CHANNEL_UPDATE: (e: any) => {
             const { channel } = e;
             if (!channel || channel.name !== OBFUSCATED_NAME) return;
-            if (nameOverrides.has(channel.id)) applyNameOverrides();
+            if (nameOverrides.has(channel.id)) {
+                applyNameOverrides();
+            } else if (channel.guild_id) {
+                queryGuild(channel.guild_id);
+            }
         }
     }
 });
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+const queriedGuilds = new Set<string>();
 
 function isHiddenChannelImpl(channel: Channel & { channelId?: string; }, checkConnect = false) {
     try {
@@ -407,33 +416,61 @@ function isHiddenChannelImpl(channel: Channel & { channelId?: string; }, checkCo
     }
 }
 
-async function refreshList() {
+function getGuildChannels(guildId: string) {
+    const store = ChannelStore as any;
+    const candidates = [
+        store.getChannels?.(guildId),
+        store.getGuildChannels?.(guildId),
+        store.getMutableGuildChannelsForGuild?.(guildId)
+    ];
+
+    const out: Channel[] = [];
+    for (const v of candidates) {
+        if (!v) continue;
+        if (Array.isArray(v)) out.push(...v.map((x: any) => x.channel ?? x));
+        else out.push(...Object.values(v).map((x: any) => x.channel ?? x));
+    }
+    return [...new Map(out.map(c => [c.id, c])).values()];
+}
+
+function queryAllGuilds() {
+    for (const guild of Object.values(GuildStore.getGuilds())) {
+        const channels = getGuildChannels(guild.id);
+        if (channels.some(c => isHiddenChannelImpl(c) && !nameOverrides.has(c.id))) {
+            queryGuild(guild.id);
+        }
+    }
+}
+
+async function queryGuild(guildId: string) {
+    if (queriedGuilds.has(guildId)) return;
+    queriedGuilds.add(guildId);
+
     try {
-        const url = settings.store.listUrl;
-        const res = await fetch(url);
-        if (!res.ok) {
-            logger.warn(`list fetch failed: ${res.status}`);
-            return;
-        }
+        const res = await fetch(settings.store.queryUrl, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ guild: guildId })
+        });
+        if (!res.ok) return;
 
-        const text = await res.text();
-        let added = 0;
-        for (const line of text.split("\n")) {
-            if (!line.trim()) continue;
-            try {
-                const entry = JSON.parse(line) as { c?: string; n?: string };
-                if (typeof entry.c === "string" && typeof entry.n === "string" && entry.n !== OBFUSCATED_NAME) {
-                    if (!nameOverrides.has(entry.c)) added++;
-                    nameOverrides.set(entry.c, entry.n);
-                }
-            } catch { /* skip malformed lines */ }
-        }
+        const data = await res.json() as { status?: string; names?: Array<{ c: string; n: string; }> };
+        if (data.status !== "found" || !data.names?.length) return;
 
-        applyNameOverrides();
-        void persistOverrides();
-        logger.info(`name database refreshed (${nameOverrides.size} total, ${added} new)`);
+        let changed = false;
+        for (const e of data.names) {
+            if (e.n && e.n !== OBFUSCATED_NAME && !nameOverrides.has(e.c)) {
+                nameOverrides.set(e.c, e.n);
+                changed = true;
+            }
+        }
+        if (changed) {
+            applyNameOverrides();
+            void persistOverrides();
+            logger.info(`got ${data.names.length} names for guild ${guildId} from the database`);
+        }
     } catch (e) {
-        logger.error("refreshList failed:", e);
+        logger.error("queryGuild failed:", e);
     }
 }
 
