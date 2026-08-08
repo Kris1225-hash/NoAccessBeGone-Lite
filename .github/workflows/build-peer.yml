@@ -13,10 +13,22 @@ jobs:
         include:
           - os: windows-latest
             name: nab-peer-windows.exe
+            script: peer/nab_peer.py
           - os: macos-latest
             name: nab-peer-macos
+            script: peer/nab_peer.py
           - os: ubuntu-latest
             name: nab-peer-linux
+            script: peer/nab_peer.py
+          - os: windows-latest
+            name: nab-generator-windows.exe
+            script: peer/nab_factory.py
+          - os: macos-latest
+            name: nab-generator-macos
+            script: peer/nab_factory.py
+          - os: ubuntu-latest
+            name: nab-generator-linux
+            script: peer/nab_factory.py
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +36,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name nab-peer peer/nab_peer.py
+      - run: pyinstaller --onefile --name nab ${{ matrix.script }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: dist/nab-peer${{ runner.os == 'Windows' && '.exe' || '' }}
+          path: dist/nab${{ runner.os == 'Windows' && '.exe' || '' }}
