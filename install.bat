@@ -25,6 +25,12 @@ copy /y "%REPO_DIR%plugin-lite\index.tsx" "%VENCORD_DIR%\src\plugins\%PLUGIN_NAM
 copy /y "%REPO_DIR%plugin-lite\style.css" "%VENCORD_DIR%\src\plugins\%PLUGIN_NAME%\style.css" >nul
 copy /y "%REPO_DIR%plugin-lite\components\LockScreen.tsx" "%VENCORD_DIR%\src\plugins\%PLUGIN_NAME%\components\LockScreen.tsx" >nul
 
+echo [NoAccessBeGoneLite] patching Vencord CSP allowlist (nab.enby.fish) ...
+findstr /c:"nab.enby.fish" "%VENCORD_DIR%\src\main\csp\index.ts" >nul 2>nul
+if errorlevel 1 (
+    powershell -NoProfile -Command "(Get-Content '%VENCORD_DIR%\src\main\csp\index.ts' -Raw) -replace [regex]::Escape('\"icons.duckduckgo.com\": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)'), ('\"icons.duckduckgo.com\": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)' + [char]10 + '    \"nab.enby.fish\": ConnectSrc, // NoAccessBeGone name database') | Set-Content '%VENCORD_DIR%\src\main\csp\index.ts' -NoNewline"
+)
+
 cd /d "%VENCORD_DIR%"
 call pnpm install --no-frozen-lockfile
 call pnpm build

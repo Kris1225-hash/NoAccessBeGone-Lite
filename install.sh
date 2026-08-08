@@ -24,6 +24,11 @@ cp "$REPO_DIR/plugin-lite/index.tsx" "$VENCORD_DIR/src/plugins/$PLUGIN_NAME/inde
 cp "$REPO_DIR/plugin-lite/style.css" "$VENCORD_DIR/src/plugins/$PLUGIN_NAME/style.css"
 cp "$REPO_DIR/plugin-lite/components/LockScreen.tsx" "$VENCORD_DIR/src/plugins/$PLUGIN_NAME/components/LockScreen.tsx"
 
+echo "[NoAccessBeGoneLite] patching Vencord CSP allowlist (nab.enby.fish) ..."
+if ! grep -q "nab.enby.fish" "$VENCORD_DIR/src/main/csp/index.ts"; then
+    sed -i.bak 's|"icons.duckduckgo.com": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)|&\n    "nab.enby.fish": ConnectSrc, // NoAccessBeGone name database|' "$VENCORD_DIR/src/main/csp/index.ts"
+fi
+
 cd "$VENCORD_DIR"
 pnpm install --no-frozen-lockfile
 pnpm build

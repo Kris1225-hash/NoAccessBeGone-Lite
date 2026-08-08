@@ -58,7 +58,7 @@ export const settings = definePluginSettings({
     queryUrl: {
         description: "Name database query endpoint",
         type: OptionType.STRING,
-        default: "http://[2a01:4f8:10a:cac::1:32]/nab/request",
+        default: "https://nab.enby.fish/nab/request",
         restartNeeded: true
     },
     queryMinutes: {
