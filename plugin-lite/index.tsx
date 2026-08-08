@@ -1,8 +1,7 @@
 /*
- * NoAccessBeGoneLite
- * Shows hidden channels and displays names for channels that appear in the
- * community name database (names.jsonl). The database is contributed by
- * NoAccessBeGone users and published in this repo.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 import "./style.css";
