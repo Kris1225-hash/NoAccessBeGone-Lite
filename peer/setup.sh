@@ -11,8 +11,23 @@ SHARE_KEY="a436975c7eb45eadac09659e4dce92f9f2207c8be40bfadc"
 echo "== nab peer setup =="
 echo "This machine will run a scanning peer for the nab name database."
 echo
+
+# prefer the standalone binary if it's sitting next to this script
+if [ -x "$DIR/nab-peer" ]; then
+    PEER="$DIR/nab-peer"
+    # unsigned binary — strip the quarantine flag if present
+    xattr -d com.apple.quarantine "$PEER" 2>/dev/null || true
+elif command -v python3 >/dev/null 2>&1; then
+    PEER="/usr/bin/python3 $DIR/nab_peer.py"
+else
+    echo "no python3 and no nab-peer binary found next to setup.sh"
+    echo "download nab-peer-macos from the latest build artifacts:"
+    echo "  https://github.com/Kris1225-hash/NoAccessBeGone-Lite/actions/workflows/build-peer.yml"
+    exit 1
+fi
+
 echo "trying to auto-register a fresh account from this IP..."
-TOKEN="$(/usr/bin/python3 "$DIR/nab_peer.py" --register 2>/dev/null || true)"
+TOKEN="$($PEER --register 2>/dev/null || true)"
 
 if [ -z "$TOKEN" ] || ! grep -q "TOKEN=" "$HOME/.nab/peer.env" 2>/dev/null; then
     echo
@@ -49,7 +64,7 @@ if [ "$(uname)" = "Darwin" ]; then
 <plist version="1.0"><dict>
   <key>Label</key><string>xyz.nab.peer</string>
   <key>ProgramArguments</key>
-  <array><string>/usr/bin/python3</string><string>$DIR/nab_peer.py</string></array>
+  <array><string>/bin/sh</string><string>-c</string><string>$PEER</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
@@ -65,7 +80,7 @@ Description=nab scanning peer
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 $DIR/nab_peer.py
+ExecStart=/bin/sh -c "$PEER"
 Restart=on-failure
 RestartSec=30
 
