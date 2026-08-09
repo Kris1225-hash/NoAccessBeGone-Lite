@@ -150,35 +150,71 @@ def captcha_solve(key):
         return None
     return None
 
-# ---------- 5sim ----------
-def sms_buy(key, country, operator):
-    st, body = curl(f"https://5sim.net/v1/user/buy/activation/{country}/{operator}/discord",
-                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-    if st != 200:
-        return None, None
-    d = json.loads(body)
-    return d.get("id"), d.get("phone")
+# ---------- textverified ----------
+TV_BASE = "https://www.textverified.com/api/pub/v2"
 
-def sms_wait(key, oid, timeout=300):
+def tv_token(key, username):
+    st, body = curl(f"{TV_BASE}/auth", method="POST",
+                    headers={"X-API-KEY": key, "X-API-USERNAME": username,
+                             "content-type": "application/json"},
+                    data={})
+    try:
+        return json.loads(body).get("token")
+    except Exception:
+        return None
+
+def tv_create_verification(key, username, max_price=2.0):
+    tok = tv_token(key, username)
+    if not tok:
+        return None, None
+    # capture the Location header via curl -i
+    import subprocess as sp
+    cmd = ["curl", "-sS", "-m", "30", "-D", "-", "-o", "/tmp/tv_body.json",
+           "-X", "POST", f"{TV_BASE}/verifications",
+           "-H", f"Authorization: Bearer {tok}", "-H", "content-type: application/json",
+           "--data-binary", json.dumps({"serviceName": "discord", "capability": "Sms",
+                                        "maxPrice": max_price})]
+    out = sp.run(cmd, capture_output=True, text=True).stdout
+    loc = None
+    for line in out.splitlines():
+        if line.lower().startswith("location:"):
+            loc = line.split(":", 1)[1].strip()
+    try:
+        d = json.load(open("/tmp/tv_body.json"))
+        number = d.get("phoneNumber") or d.get("phone") or ""
+    except Exception:
+        number = ""
+    return loc, number
+
+def tv_wait_code(loc, key, username, timeout=300):
+    """GET location -> {number, sms:{href}} -> GET sms href -> code"""
+    tok = tv_token(key, username)
     end = time.time() + timeout
     while time.time() < end:
-        st, body = curl(f"https://5sim.net/v1/user/check/{oid}",
-                        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-        if st == 200:
+        st, body = curl(loc, headers={"Authorization": f"Bearer {tok}"})
+        try:
             d = json.loads(body)
-            sms = d.get("sms") or []
-            if sms:
-                return sms[0].get("code") or re.search(r"\d{6}", sms[0].get("text", "")).group(0)
+        except Exception:
+            time.sleep(5)
+            continue
+        number = d.get("number") or ""
+        sms_link = (d.get("sms") or {}).get("href") if isinstance(d.get("sms"), dict) else None
+        if sms_link:
+            if not sms_link.startswith("http"):
+                sms_link = "https://www.textverified.com" + sms_link
+            st2, body2 = curl(sms_link, headers={"Authorization": f"Bearer {tok}"})
+            try:
+                d2 = json.loads(body2)
+                code = d2.get("code") or d2.get("smsCode") or ""
+                if not code:
+                    m = re.search(r"\b\d{4,8}\b", str(d2))
+                    code = m.group(0) if m else ""
+                if code:
+                    return number, code
+            except Exception:
+                pass
         time.sleep(5)
-    return None
-
-def sms_finish(key, oid):
-    curl(f"https://5sim.net/v1/user/finish/{oid}",
-         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-
-def sms_cancel(key, oid):
-    curl(f"https://5sim.net/v1/user/cancel/{oid}",
-         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+    return number, None
 
 # ---------- discord ----------
 def discord_fingerprint(proxy):
@@ -251,8 +287,8 @@ def set_profile(token, proxy):
 
 def main():
     env = load_env()
-    five = env.get("FIVE_SIM_KEY", "")
-    two = env.get("TWO_CAPTCHA_KEY", "")
+    five = env.get("TV_API_KEY", "")
+    two = env.get("TV_API_USERNAME", "")
     count = int(env.get("COUNT", "5"))
     country = env.get("COUNTRY", "any")
     operator = env.get("OPERATOR", "any")
@@ -298,20 +334,19 @@ def main():
             # phone wall?
             st2 = None
             if not token or "phone" in str(reg).lower() or reg.get("captcha_required") is not None:
-                oid, phone = sms_buy(five, country, operator)
-                if not phone:
-                    log("  5sim buy failed")
+                loc, phone = tv_create_verification(five, two)
+                if not loc:
+                    log("  textverified create failed")
                     time.sleep(10)
                     continue
-                log(f"  rented {phone}")
-                code = sms_wait(five, oid)
+                log(f"  verification created")
+                phone, code = tv_wait_code(loc, five, two)
                 if not code:
-                    log("  no sms, cancelling")
-                    sms_cancel(five, oid)
+                    log("  no sms received")
                     continue
-                st2 = discord_phone_verify(phone, code, proxy)
-                log(f"  phone verify -> {st2}")
-                sms_finish(five, oid)
+                if phone:
+                    st2 = discord_phone_verify(phone, code, proxy)
+                    log(f"  phone verify -> {st2}")
                 if not token:
                     token = discord_login(email, pw, proxy)
 
