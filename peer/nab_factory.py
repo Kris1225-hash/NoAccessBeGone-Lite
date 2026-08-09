@@ -28,7 +28,23 @@ LOG = "/var/log/nab/factory.log"
 HUB = "https://nab.enby.fish"
 
 DISCORD_SITEKEY = "f5561ba9-8f1e-40ca-9b5b-a0b3f7192c34"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9210 Chrome/134.0.6998.205 Electron/35.3.0 Safari/537.36"
+
+import uuid as _uuid
+
+def super_properties():
+    props = {
+        "os": "Windows", "browser": "Discord Client", "device": "",
+        "system_locale": "en-US", "browser_user_agent": UA,
+        "browser_version": "134.0.6998.205", "os_version": "10.0.26100",
+        "os_arch": "x64", "app_arch": "x64", "os_sdk_version": "26100",
+        "referrer": "", "referring_domain": "", "referrer_current": "",
+        "referring_domain_current": "", "release_channel": "stable",
+        "client_build_number": 589596, "client_event_source": None,
+        "client_launch_id": str(_uuid.uuid4()), "launch_signature": str(_uuid.uuid4()),
+        "client_heartbeat_session_id": str(_uuid.uuid4()), "client_app_state": "focused"
+    }
+    return __import__("base64").b64encode(json.dumps(props).encode()).decode()
 
 def log(msg):
     line = f"{time.strftime('%H:%M:%S')} {msg}"
@@ -60,6 +76,8 @@ def curl(url, method="GET", headers=None, data=None, proxy=None, timeout=40):
         cmd += ["-H", f"{k}: {v}"]
     if proxy:
         cmd += ["-x", proxy]
+    if "x-super-properties" not in str(headers or {}):
+        cmd += ["-H", "x-super-properties: " + super_properties()]
     if data is not None:
         if isinstance(data, dict):
             data = json.dumps(data)

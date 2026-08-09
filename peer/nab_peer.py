@@ -25,7 +25,40 @@ def log(msg):
     print(line, flush=True)
     events.append({"t": time.strftime("%H:%M:%S"), "m": msg})
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9210 Chrome/134.0.6998.205 Electron/35.3.0 Safari/537.36"
+
+import uuid
+
+def make_super_properties():
+    """Realistic x-super-properties (desktop client). Empty e30= screams selfbot."""
+    props = {
+        "os": "Windows",
+        "browser": "Discord Client",
+        "device": "",
+        "system_locale": "en-US",
+        "browser_user_agent": UA,
+        "browser_version": "134.0.6998.205",
+        "os_version": "10.0.26100",
+        "os_arch": "x64",
+        "app_arch": "x64",
+        "os_sdk_version": "26100",
+        "referrer": "",
+        "referring_domain": "",
+        "referrer_current": "",
+        "referring_domain_current": "",
+        "release_channel": "stable",
+        "client_build_number": 589596,
+        "client_event_source": None,
+        "client_launch_id": str(uuid.uuid4()),
+        "launch_signature": str(uuid.uuid4()),
+        "client_heartbeat_session_id": str(uuid.uuid4()),
+        "client_app_state": "focused"
+    }
+    return "e30=" if False else __import__("base64").b64encode(json.dumps(props).encode()).decode()
+
+def rotate_fingerprint():
+    """Real clients rotate launch UUIDs periodically."""
+    return make_super_properties()
 
 def http(url, data=None, headers=None, method=None):
     """curl-based request (urllib gets WAF-blocked on some endpoints)."""
@@ -48,8 +81,18 @@ def http(url, data=None, headers=None, method=None):
         pass
     return code, body
 
+_super_props = make_super_properties()
+_last_rotate = time.time()
+
 def discord(url, token, method=None):
-    st, body = http("https://discord.com" + url, headers={"authorization": token}, method=method)
+    global _super_props, _last_rotate
+    if time.time() - _last_rotate > 1800:
+        _super_props = rotate_fingerprint()
+        _last_rotate = time.time()
+    st, body = http("https://discord.com" + url,
+                    headers={"authorization": token, "x-super-properties": _super_props,
+                             "user-agent": UA, "origin": "https://discord.com",
+                             "referer": "https://discord.com/"}, method=method)
     if isinstance(body, str):
         body = {}
     if st == 429:
@@ -308,6 +351,7 @@ def main():
         except Exception as e:
             log(f"error: {e}")
 
+        heartbeat()
         time.sleep(POLL_EVERY)
 
 # ---------------- auto-register: create an account from this (home) IP ----------------
